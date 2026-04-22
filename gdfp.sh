@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GDFP - Google Domain Fronting Proxy Installer
-# Creator: D3nte | Original project: masterking32/MasterHttpRelayVPN
+# Creator: Dnt3e | Original project: masterking32/MasterHttpRelayVPN
 # Target: Ubuntu 22.04 / Ubuntu 22+
 
 # ─── Colors ────────────────────────────────────────────────────────────────────
@@ -48,10 +48,16 @@ is_running() {
 
 get_proxy_addr() {
     if [[ -f "${CONFIG_FILE}" ]]; then
-        local host port
+        local host port socks5_port socks5_enabled
         host=$(python3 -c "import json,sys; d=json.load(open('${CONFIG_FILE}')); print(d.get('listen_host','127.0.0.1'))" 2>/dev/null)
         port=$(python3 -c "import json,sys; d=json.load(open('${CONFIG_FILE}')); print(d.get('listen_port',8085))" 2>/dev/null)
-        echo "${host:-127.0.0.1}:${port:-8085}"
+        socks5_enabled=$(python3 -c "import json,sys; d=json.load(open('${CONFIG_FILE}')); print(d.get('socks5_enabled',True))" 2>/dev/null)
+        socks5_port=$(python3 -c "import json,sys; d=json.load(open('${CONFIG_FILE}')); print(d.get('socks5_port',1080))" 2>/dev/null)
+        if [[ "${socks5_enabled}" == "True" ]]; then
+            echo "HTTP ${host:-127.0.0.1}:${port:-8085} | SOCKS5 ${host:-127.0.0.1}:${socks5_port:-1080}"
+        else
+            echo "HTTP ${host:-127.0.0.1}:${port:-8085}"
+        fi
     else
         echo "N/A"
     fi
@@ -68,7 +74,7 @@ show_header() {
     echo -e "  ${BOLD}${CYAN}╚██████╔╝██████╔╝██║     ██║     ${RESET}"
     echo -e "  ${BOLD}${CYAN} ╚═════╝ ╚═════╝ ╚═╝     ╚═╝     ${RESET}"
     echo ""
-    echo -e "  ${WHITE}by ${BOLD}D3nte${RESET}   ${DIM}(original project: masterking32/MasterHttpRelayVPN)${RESET}"
+    echo -e "  ${WHITE}by ${BOLD}Dnt3e${RESET}   ${DIM}(original project: masterking32/MasterHttpRelayVPN)${RESET}"
     hr
     # Status line
     if is_installed; then
@@ -134,7 +140,7 @@ install_prerequisites() {
         echo -e "${GREEN}OK${RESET}"
     fi
 
-    # Check unzip / curl
+    # Check unzip / curl / wget
     for pkg in unzip curl wget; do
         echo -ne "  Checking ${pkg}     ... "
         if ! command -v "${pkg}" &>/dev/null; then
@@ -152,12 +158,18 @@ install_prerequisites() {
         pip3 install -r "${INSTALL_DIR}/requirements.txt" --break-system-packages 2>&1
         echo ""
         echo -e "  ${GREEN}✔  Prerequisites installed successfully.${RESET}"
+        echo ""
+        echo -e "  ${DIM}Installed packages provide:${RESET}"
+        echo -e "  ${DIM}  • cryptography  — MITM TLS interception (required for HTTPS)${RESET}"
+        echo -e "  ${DIM}  • h2            — HTTP/2 multiplexing (faster relay)${RESET}"
+        echo -e "  ${DIM}  • brotli        — Content-Encoding: br decompression${RESET}"
+        echo -e "  ${DIM}  • zstandard     — Content-Encoding: zstd decompression${RESET}"
     else
         echo -e "  ${YELLOW}GDFP not installed yet — requirements.txt not found.${RESET}"
         echo -e "  ${DIM}Please run option 2 (Install GDFP) first, or install manually.${RESET}"
         echo ""
         echo -e "  ${DIM}Manual install after option 2:${RESET}"
-        echo -e "  ${DIM}  pip3 install cryptography h2${RESET}"
+        echo -e "  ${DIM}  pip3 install cryptography h2 brotli zstandard${RESET}"
     fi
     pause
 }
@@ -207,65 +219,27 @@ install_script() {
     echo -e "  ${DIM}Press [Enter] to accept the default value shown in [brackets].${RESET}"
     echo ""
 
-    # ── MODE ──────────────────────────────────────────────────────────────────
-    echo -e "  ${BOLD}Select Mode:${RESET}"
-    echo ""
-    echo -e "   ${CYAN}1)${RESET} ${BOLD}apps_script${RESET}     — Free Google account. Easiest, no server needed."
-    echo -e "   ${CYAN}2)${RESET} ${BOLD}google_fronting${RESET} — Requires your own Google Cloud Run service."
-    echo -e "   ${CYAN}3)${RESET} ${BOLD}domain_fronting${RESET} — Requires a Cloudflare Worker."
-    echo -e "   ${CYAN}4)${RESET} ${BOLD}custom_domain${RESET}   — Requires a custom domain on Cloudflare."
-    echo ""
-    echo -e "  ${DIM}Most users should choose option 1 (apps_script).${RESET}"
+    # ── MANDATORY: script_id(s) ───────────────────────────────────────────────
+    echo -e "  ${BOLD}Script / Deployment ID(s)${RESET}  ${RED}(required)${RESET}"
+    echo -e "  ${DIM}Google Apps Script → Deploy → Manage deployments → copy the Deployment ID.${RESET}"
+    echo -e "  ${DIM}You can enter multiple IDs separated by commas for load balancing.${RESET}"
+    echo -e "  ${DIM}(Multiple deployments must all use the same auth_key)${RESET}"
     echo ""
     while true; do
-        echo -ne "  Mode [1-4, default=1]: "
-        read -r mode_choice
-        mode_choice="${mode_choice:-1}"
-        case "${mode_choice}" in
-            1) CFG_MODE="apps_script";     break ;;
-            2) CFG_MODE="google_fronting"; break ;;
-            3) CFG_MODE="domain_fronting"; break ;;
-            4) CFG_MODE="custom_domain";   break ;;
-            *) echo -e "  ${RED}Invalid choice. Enter 1-4.${RESET}" ;;
-        esac
-    done
-    echo -e "  ${GREEN}✔  Mode: ${CFG_MODE}${RESET}"
-    echo ""
-
-    # ── MANDATORY: script_id ──────────────────────────────────────────────────
-    if [[ "${CFG_MODE}" == "apps_script" || "${CFG_MODE}" == "google_fronting" ]]; then
-        echo -e "  ${BOLD}Script / Deployment ID${RESET}  ${RED}(required)${RESET}"
-        echo -e "  ${DIM}Google Apps Script → Deploy → Manage deployments → copy the Deployment ID.${RESET}"
-        while true; do
-            echo -ne "  script_id: "
-            read -r CFG_SCRIPT_ID
-            CFG_SCRIPT_ID="${CFG_SCRIPT_ID// /}"
-            if [[ -z "${CFG_SCRIPT_ID}" ]]; then
-                echo -e "  ${RED}script_id cannot be empty.${RESET}"
-            else
-                break
-            fi
-        done
-        echo ""
-    else
-        # For cloudflare modes, worker_host or custom_domain may be needed
-        echo -e "  ${BOLD}Worker Host / Custom Domain${RESET}  ${RED}(required for this mode)${RESET}"
-        echo -ne "  worker_host (e.g. my-worker.workers.dev): "
-        read -r CFG_WORKER_HOST
-        CFG_WORKER_HOST="${CFG_WORKER_HOST// /}"
-        echo ""
-        if [[ "${CFG_MODE}" == "custom_domain" ]]; then
-            echo -ne "  custom_domain (e.g. proxy.yourdomain.com): "
-            read -r CFG_CUSTOM_DOMAIN
-            CFG_CUSTOM_DOMAIN="${CFG_CUSTOM_DOMAIN// /}"
-            echo ""
+        echo -ne "  script_id(s): "
+        read -r CFG_SCRIPT_INPUT
+        CFG_SCRIPT_INPUT="${CFG_SCRIPT_INPUT// /}"
+        if [[ -z "${CFG_SCRIPT_INPUT}" ]]; then
+            echo -e "  ${RED}script_id cannot be empty.${RESET}"
+        else
+            break
         fi
-        CFG_SCRIPT_ID=""
-    fi
+    done
+    echo ""
 
     # ── MANDATORY: auth_key ───────────────────────────────────────────────────
     echo -e "  ${BOLD}Auth Key (secret password)${RESET}  ${RED}(required)${RESET}"
-    echo -e "  ${DIM}Must match AUTH_KEY in your Google Apps Script / Worker code.${RESET}"
+    echo -e "  ${DIM}Must match AUTH_KEY in your Google Apps Script Code.gs.${RESET}"
     while true; do
         echo -ne "  auth_key: "
         read -r CFG_AUTH_KEY
@@ -296,10 +270,42 @@ install_script() {
     echo -ne "  listen_port   [8085]: "
     read -r CFG_LISTEN_PORT
     CFG_LISTEN_PORT="${CFG_LISTEN_PORT:-8085}"
-    # Validate port
     if ! [[ "${CFG_LISTEN_PORT}" =~ ^[0-9]+$ ]] || (( CFG_LISTEN_PORT < 1 || CFG_LISTEN_PORT > 65535 )); then
         echo -e "  ${YELLOW}Invalid port, using default 8085.${RESET}"
         CFG_LISTEN_PORT=8085
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}SOCKS5 Settings${RESET}  ${DIM}(built-in SOCKS5 proxy)${RESET}"
+    echo ""
+
+    echo -ne "  Enable SOCKS5 proxy? [Y/n]: "
+    read -r CFG_SOCKS5_ENABLED_INPUT
+    CFG_SOCKS5_ENABLED_INPUT="${CFG_SOCKS5_ENABLED_INPUT:-y}"
+    if [[ "${CFG_SOCKS5_ENABLED_INPUT,,}" == "y" ]]; then
+        CFG_SOCKS5_ENABLED="true"
+        echo -ne "  socks5_port   [1080]: "
+        read -r CFG_SOCKS5_PORT
+        CFG_SOCKS5_PORT="${CFG_SOCKS5_PORT:-1080}"
+        if ! [[ "${CFG_SOCKS5_PORT}" =~ ^[0-9]+$ ]] || (( CFG_SOCKS5_PORT < 1 || CFG_SOCKS5_PORT > 65535 )); then
+            echo -e "  ${YELLOW}Invalid port, using default 1080.${RESET}"
+            CFG_SOCKS5_PORT=1080
+        fi
+    else
+        CFG_SOCKS5_ENABLED="false"
+        CFG_SOCKS5_PORT=1080
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Relay Performance${RESET}"
+    echo ""
+    echo -e "  ${DIM}parallel_relay: Number of simultaneous relay connections (1-5).${RESET}"
+    echo -ne "  parallel_relay [1]: "
+    read -r CFG_PARALLEL_RELAY
+    CFG_PARALLEL_RELAY="${CFG_PARALLEL_RELAY:-1}"
+    if ! [[ "${CFG_PARALLEL_RELAY}" =~ ^[0-9]+$ ]] || (( CFG_PARALLEL_RELAY < 1 || CFG_PARALLEL_RELAY > 5 )); then
+        echo -e "  ${YELLOW}Invalid value, using default 1.${RESET}"
+        CFG_PARALLEL_RELAY=1
     fi
 
     echo ""
@@ -326,37 +332,54 @@ install_script() {
     # ── Build config.json ─────────────────────────────────────────────────────
     echo -e "  ${CYAN}Writing config.json ...${RESET}"
 
-    # Build JSON with python3 for clean formatting
     python3 - <<PYEOF
 import json, sys
 
+script_input = "${CFG_SCRIPT_INPUT}".strip()
+# Support comma-separated multiple script IDs
+if "," in script_input:
+    script_ids = [s.strip() for s in script_input.split(",") if s.strip()]
+    script_key = "script_ids"
+    script_val = script_ids
+else:
+    script_key = "script_id"
+    script_val = script_input
+
 cfg = {
-    "mode": "${CFG_MODE}",
+    "mode": "apps_script",
     "google_ip": "${CFG_GOOGLE_IP}",
     "front_domain": "${CFG_FRONT_DOMAIN}",
+    script_key: script_val,
+    "auth_key": "${CFG_AUTH_KEY}",
     "listen_host": "${CFG_LISTEN_HOST}",
     "listen_port": int("${CFG_LISTEN_PORT}"),
+    "socks5_enabled": "${CFG_SOCKS5_ENABLED}" == "true",
+    "socks5_port": int("${CFG_SOCKS5_PORT}"),
+    "parallel_relay": int("${CFG_PARALLEL_RELAY}"),
     "log_level": "${CFG_LOG_LEVEL}",
     "verify_ssl": "${CFG_VERIFY_SSL}" == "true",
+    "block_hosts": [],
+    "bypass_hosts": ["localhost", ".local", ".lan", ".home.arpa"],
+    "direct_google_exclude": [
+        "gemini.google.com",
+        "aistudio.google.com",
+        "notebooklm.google.com",
+        "labs.google.com",
+        "meet.google.com",
+        "accounts.google.com",
+        "ogs.google.com",
+        "mail.google.com",
+        "calendar.google.com",
+        "drive.google.com",
+        "docs.google.com",
+        "chat.google.com"
+    ],
+    "direct_google_allow": [
+        "www.google.com",
+        "safebrowsing.google.com"
+    ],
     "hosts": {}
 }
-
-script_id = "${CFG_SCRIPT_ID}".strip()
-if script_id:
-    cfg["script_id"] = script_id
-    cfg["auth_key"] = "${CFG_AUTH_KEY}"
-
-worker_host = "${CFG_WORKER_HOST:-}".strip()
-if worker_host:
-    cfg["worker_host"] = worker_host
-    cfg["auth_key"] = "${CFG_AUTH_KEY}"
-
-custom_domain = "${CFG_CUSTOM_DOMAIN:-}".strip()
-if custom_domain:
-    cfg["custom_domain"] = custom_domain
-
-if "auth_key" not in cfg:
-    cfg["auth_key"] = "${CFG_AUTH_KEY}"
 
 with open("${CONFIG_FILE}", "w") as f:
     json.dump(cfg, f, indent=2)
@@ -369,6 +392,9 @@ PYEOF
     PYTHON_BIN=$(command -v python3)
     echo -e "  ${CYAN}Creating systemd service...${RESET}"
 
+    SOCKS5_FLAG=""
+    [[ "${CFG_SOCKS5_ENABLED}" == "false" ]] && SOCKS5_FLAG="--disable-socks5"
+
     cat > "${SERVICE_FILE}" <<EOF
 [Unit]
 Description=GDFP - Google Domain Fronting Proxy
@@ -378,7 +404,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${PYTHON_BIN} ${INSTALL_DIR}/main.py -c ${CONFIG_FILE}
+ExecStart=${PYTHON_BIN} ${INSTALL_DIR}/main.py -c ${CONFIG_FILE} ${SOCKS5_FLAG}
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:${LOG_FILE}
@@ -394,6 +420,19 @@ EOF
     echo -e "  ${GREEN}✔  Service created and enabled.${RESET}"
     echo ""
 
+    # ── Install CA certificate ─────────────────────────────────────────────────
+    echo -ne "  Install MITM CA certificate now? [Y/n]: "
+    read -r install_cert_now
+    install_cert_now="${install_cert_now:-y}"
+    if [[ "${install_cert_now,,}" == "y" ]]; then
+        echo -e "  ${CYAN}Installing CA certificate (apps_script mode requires MITM for HTTPS)...${RESET}"
+        python3 "${INSTALL_DIR}/main.py" -c "${CONFIG_FILE}" --install-cert 2>&1 | tail -5
+        echo ""
+        echo -e "  ${DIM}If auto-install failed, manually install: ${WHITE}${INSTALL_DIR}/ca/ca.crt${RESET}"
+        echo -e "  ${DIM}Firefox users: also import it in Settings → Privacy → Certificates.${RESET}"
+    fi
+    echo ""
+
     # ── Start service ─────────────────────────────────────────────────────────
     echo -ne "  Start GDFP proxy now? [Y/n]: "
     read -r start_now
@@ -402,7 +441,10 @@ EOF
         systemctl start "${SERVICE_NAME}"
         sleep 1
         if is_running; then
-            echo -e "  ${GREEN}${BOLD}✔  GDFP is running on ${CFG_LISTEN_HOST}:${CFG_LISTEN_PORT}${RESET}"
+            echo -e "  ${GREEN}${BOLD}✔  GDFP is running!${RESET}"
+            echo -e "  ${DIM}HTTP  proxy : ${WHITE}${CFG_LISTEN_HOST}:${CFG_LISTEN_PORT}${RESET}"
+            [[ "${CFG_SOCKS5_ENABLED}" == "true" ]] && \
+                echo -e "  ${DIM}SOCKS5 proxy: ${WHITE}${CFG_LISTEN_HOST}:${CFG_SOCKS5_PORT}${RESET}"
         else
             echo -e "  ${RED}Service failed to start. Check logs with option 4.${RESET}"
         fi
@@ -411,9 +453,11 @@ EOF
     echo ""
     echo -e "  ${GREEN}${BOLD}Installation complete!${RESET}"
     echo ""
-    echo -e "  ${DIM}Proxy address : ${WHITE}${CFG_LISTEN_HOST}:${CFG_LISTEN_PORT}${RESET}"
-    echo -e "  ${DIM}Config file   : ${WHITE}${CONFIG_FILE}${RESET}"
-    echo -e "  ${DIM}Log file      : ${WHITE}${LOG_FILE}${RESET}"
+    echo -e "  ${DIM}HTTP proxy  : ${WHITE}${CFG_LISTEN_HOST}:${CFG_LISTEN_PORT}${RESET}"
+    [[ "${CFG_SOCKS5_ENABLED}" == "true" ]] && \
+        echo -e "  ${DIM}SOCKS5 proxy: ${WHITE}${CFG_LISTEN_HOST}:${CFG_SOCKS5_PORT}${RESET}"
+    echo -e "  ${DIM}Config file : ${WHITE}${CONFIG_FILE}${RESET}"
+    echo -e "  ${DIM}Log file    : ${WHITE}${LOG_FILE}${RESET}"
     pause
 }
 
@@ -422,7 +466,7 @@ EOF
 # ═══════════════════════════════════════════════════════════════════════════════
 generate_xray_config() {
     show_header
-    echo -e "  ${BOLD}[3] Generate Xray HTTP Outbound Config${RESET}"
+    echo -e "  ${BOLD}[3] Generate Xray Outbound Config${RESET}"
     echo ""
 
     if [[ ! -f "${CONFIG_FILE}" ]]; then
@@ -437,39 +481,106 @@ generate_xray_config() {
 
     LOCAL_HOST=$(read_cfg "listen_host" "127.0.0.1")
     LOCAL_PORT=$(read_cfg "listen_port" "8085")
+    SOCKS5_ENABLED=$(read_cfg "socks5_enabled" "True")
+    SOCKS5_PORT=$(read_cfg "socks5_port" "1080")
 
-    echo -e "  Reading config: ${DIM}${LOCAL_HOST}:${LOCAL_PORT}${RESET}"
+    echo -e "  ${DIM}HTTP proxy  : ${LOCAL_HOST}:${LOCAL_PORT}${RESET}"
+    if [[ "${SOCKS5_ENABLED}" == "True" ]]; then
+        echo -e "  ${DIM}SOCKS5 proxy: ${LOCAL_HOST}:${SOCKS5_PORT}${RESET}"
+    fi
     echo ""
 
-    XRAY_JSON=$(cat <<EOF
+    # ── Protocol Selection ────────────────────────────────────────────────────
+    echo -e "  ${BOLD}Select Xray outbound protocol:${RESET}"
+    echo ""
+    echo -e "   ${CYAN}1)${RESET} ${BOLD}HTTP${RESET}   — Standard HTTP proxy outbound  ${DIM}(port ${LOCAL_PORT})${RESET}"
+    if [[ "${SOCKS5_ENABLED}" == "True" ]]; then
+        echo -e "   ${CYAN}2)${RESET} ${BOLD}SOCKS5${RESET} — SOCKS5 proxy outbound         ${DIM}(port ${SOCKS5_PORT})${RESET}"
+    else
+        echo -e "   ${DIM}2)  SOCKS5 — disabled in config${RESET}"
+    fi
+    echo ""
+    echo -e "  ${DIM}Note: For Telegram, HTTP proxy is recommended (SOCKS5 may not work).${RESET}"
+    echo ""
+
+    while true; do
+        echo -ne "  Protocol [1-2, default=1]: "
+        read -r proto_choice
+        proto_choice="${proto_choice:-1}"
+        case "${proto_choice}" in
+            1)
+                XRAY_PROTOCOL="http"
+                XRAY_PORT="${LOCAL_PORT}"
+                XRAY_TAG="gdfp-http-proxy"
+                break
+                ;;
+            2)
+                if [[ "${SOCKS5_ENABLED}" != "True" ]]; then
+                    echo -e "  ${RED}SOCKS5 is disabled in config. Enable it first (reinstall option 2).${RESET}"
+                else
+                    XRAY_PROTOCOL="socks"
+                    XRAY_PORT="${SOCKS5_PORT}"
+                    XRAY_TAG="gdfp-socks5-proxy"
+                    break
+                fi
+                ;;
+            *)
+                echo -e "  ${RED}Invalid choice. Enter 1 or 2.${RESET}"
+                ;;
+        esac
+    done
+
+    echo ""
+
+    # ── Build JSON ────────────────────────────────────────────────────────────
+    if [[ "${XRAY_PROTOCOL}" == "http" ]]; then
+        XRAY_JSON=$(cat <<EOF
 {
-  "tag": "gdfp-http-proxy",
+  "tag": "${XRAY_TAG}",
   "protocol": "http",
   "settings": {
     "servers": [
       {
         "address": "${LOCAL_HOST}",
-        "port": ${LOCAL_PORT}
+        "port": ${XRAY_PORT}
       }
     ]
   }
 }
 EOF
 )
+    else
+        XRAY_JSON=$(cat <<EOF
+{
+  "tag": "${XRAY_TAG}",
+  "protocol": "socks",
+  "settings": {
+    "servers": [
+      {
+        "address": "${LOCAL_HOST}",
+        "port": ${XRAY_PORT},
+        "level": 0
+      }
+    ]
+  }
+}
+EOF
+)
+    fi
 
-    echo -e "  ${BOLD}${WHITE}Xray Outbound Block (HTTP proxy):${RESET}"
+    echo -e "  ${BOLD}${WHITE}Xray Outbound Block (${XRAY_PROTOCOL^^} proxy):${RESET}"
     echo ""
     echo -e "${CYAN}${XRAY_JSON}${RESET}"
     echo ""
     hr
 
     # Save to file
-    OUTFILE="${INSTALL_DIR}/xray_outbound.json"
+    OUTFILE="${INSTALL_DIR}/xray_outbound_${XRAY_PROTOCOL}.json"
     echo "${XRAY_JSON}" > "${OUTFILE}"
     echo -e "  ${GREEN}✔  Saved to: ${OUTFILE}${RESET}"
     echo ""
     echo -e "  ${DIM}Add the above block inside the ${WHITE}\"outbounds\"${DIM} array in your Xray config.${RESET}"
-    echo -e "  ${DIM}Then route traffic through tag: ${WHITE}gdfp-http-proxy${RESET}"
+    echo -e "  ${DIM}Then route traffic through tag: ${WHITE}${XRAY_TAG}${RESET}"
     pause
 }
 
@@ -509,6 +620,7 @@ status_logs_menu() {
         echo -e "   ${CYAN}4)${RESET}  Stop proxy"
         echo -e "   ${CYAN}5)${RESET}  Restart proxy"
         echo -e "   ${CYAN}6)${RESET}  Show systemd service status"
+        echo -e "   ${CYAN}7)${RESET}  Install / Reinstall CA Certificate"
         echo -e "   ${RED}0)${RESET}  Back to main menu"
         echo ""
         hr
@@ -562,6 +674,19 @@ status_logs_menu() {
                 systemctl status "${SERVICE_NAME}" --no-pager
                 pause
                 ;;
+            7)
+                echo ""
+                if is_installed; then
+                    echo -e "  ${CYAN}Installing MITM CA certificate...${RESET}"
+                    python3 "${INSTALL_DIR}/main.py" -c "${CONFIG_FILE}" --install-cert 2>&1 | tail -10
+                    echo ""
+                    echo -e "  ${DIM}Certificate file: ${WHITE}${INSTALL_DIR}/ca/ca.crt${RESET}"
+                    echo -e "  ${DIM}Firefox users: import manually in Settings → Privacy → Certificates.${RESET}"
+                else
+                    echo -e "  ${RED}GDFP is not installed. Run option 2 first.${RESET}"
+                fi
+                pause
+                ;;
             0|"")
                 return
                 ;;
@@ -606,6 +731,8 @@ uninstall() {
 
     echo ""
     echo -e "  ${GREEN}✔  GDFP has been completely removed.${RESET}"
+    echo -e "  ${DIM}Note: The MITM CA certificate may still be installed in your browser/OS.${RESET}"
+    echo -e "  ${DIM}Remove it manually if needed.${RESET}"
     pause
 }
 
