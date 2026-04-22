@@ -2,7 +2,7 @@
 
 # GDFP
 
-ساخته شده توسط **D3nte** &nbsp;|&nbsp; پروژه‌ی اصلی: [masterking32/MasterHttpRelayVPN](https://github.com/masterking32/MasterHttpRelayVPN/tree/python_testing)
+ساخته شده توسط **Dnt3e** &nbsp;|&nbsp; پروژه‌ی اصلی: [masterking32/MasterHttpRelayVPN](https://github.com/masterking32/MasterHttpRelayVPN/tree/python_testing)
 
 ---
 
